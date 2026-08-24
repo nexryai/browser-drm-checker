@@ -1,0 +1,288 @@
+name: Apply ChatGPT commits as verified
+
+on:
+  push:
+    branches:
+      - chatgpt-staging
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chatgpt-verified
+  cancel-in-progress: false
+
+env:
+  SOURCE_BRANCH: chatgpt-staging
+  TARGET_BRANCH: main
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Apply commits as GitHub-signed commits
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZERO_SHA=0000000000000000000000000000000000000000
+
+          # Ignore the push event generated when chatgpt-staging is first created.
+          if [[ "$BEFORE" == "$ZERO_SHA" ]]; then
+            echo "Initial branch creation; nothing to apply."
+            exit 0
+          fi
+
+          git init repo
+          cd repo
+
+          git remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          git fetch --no-tags origin \
+            "+refs/heads/${SOURCE_BRANCH}:refs/remotes/origin/${SOURCE_BRANCH}" \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+
+          if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "The previous commit is no longer reachable."
+            echo "Force-pushes to ${SOURCE_BRANCH} are not supported."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$BEFORE" "$AFTER"; then
+            echo "${SOURCE_BRANCH} was force-pushed."
+            echo "Refusing to apply a non-linear history."
+            exit 1
+          fi
+
+          MAIN_HEAD="$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")"
+
+          mapfile -t COMMITS < <(
+            git rev-list --reverse "${BEFORE}..${AFTER}"
+          )
+
+          if [[ ${#COMMITS[@]} -eq 0 ]]; then
+            echo "No commits to apply."
+            exit 0
+          fi
+
+          for COMMIT in "${COMMITS[@]}"; do
+            PARENT="$(git rev-parse "${COMMIT}^")"
+
+            echo "Applying ${COMMIT}"
+
+            : > additions.jsonl
+            : > deletions.jsonl
+
+            while IFS= read -r -d '' STATUS &&
+                  IFS= read -r -d '' PATHNAME; do
+
+              case "$STATUS" in
+                D)
+                  jq -cn \
+                    --arg path "$PATHNAME" \
+                    '{path: $path}' \
+                    >> deletions.jsonl
+                  ;;
+
+                A|M|T)
+                  OLD_MODE="$(
+                    git ls-tree "$PARENT" -- "$PATHNAME" |
+                    awk '{print $1}'
+                  )"
+
+                  ENTRY="$(
+                    git ls-tree "$COMMIT" -- "$PATHNAME"
+                  )"
+
+                  NEW_MODE="$(
+                    printf '%s\n' "$ENTRY" |
+                    awk '{print $1}'
+                  )"
+
+                  TYPE="$(
+                    printf '%s\n' "$ENTRY" |
+                    awk '{print $2}'
+                  )"
+
+                  if [[ "$TYPE" != "blob" ]]; then
+                    echo "Unsupported Git object type for: $PATHNAME ($TYPE)"
+                    exit 1
+                  fi
+
+                  if [[ "$NEW_MODE" == "120000" ]]; then
+                    echo "Symlinks are not supported: $PATHNAME"
+                    exit 1
+                  fi
+
+                  if [[ -z "$OLD_MODE" && "$NEW_MODE" != "100644" ]]; then
+                    echo "New executable/non-standard files are not supported:"
+                    echo "$PATHNAME ($NEW_MODE)"
+                    exit 1
+                  fi
+
+                  if [[ -n "$OLD_MODE" && "$OLD_MODE" != "$NEW_MODE" ]]; then
+                    echo "File mode changes are not supported:"
+                    echo "$PATHNAME ($OLD_MODE -> $NEW_MODE)"
+                    exit 1
+                  fi
+
+                  CONTENTS="$(
+                    git show "${COMMIT}:${PATHNAME}" |
+                    base64 -w0
+                  )"
+
+                  jq -cn \
+                    --arg path "$PATHNAME" \
+                    --arg contents "$CONTENTS" \
+                    '{
+                      path: $path,
+                      contents: $contents
+                    }' \
+                    >> additions.jsonl
+                  ;;
+
+                *)
+                  echo "Unsupported diff status: $STATUS $PATHNAME"
+                  exit 1
+                  ;;
+              esac
+            done < <(
+              git diff \
+                --name-status \
+                --no-renames \
+                -z \
+                "$PARENT" \
+                "$COMMIT"
+            )
+
+            if [[ -s additions.jsonl ]]; then
+              ADDITIONS="$(jq -s . additions.jsonl)"
+            else
+              ADDITIONS='[]'
+            fi
+
+            if [[ -s deletions.jsonl ]]; then
+              DELETIONS="$(jq -s . deletions.jsonl)"
+            else
+              DELETIONS='[]'
+            fi
+
+            HEADLINE="$(
+              git log -1 --format=%s "$COMMIT"
+            )"
+
+            BODY="$(
+              git log -1 --format=%b "$COMMIT"
+            )"
+
+            if [[ -n "$BODY" ]]; then
+              BODY="${BODY}"$'\n\n'
+            fi
+
+            BODY="${BODY}Source-Commit: ${COMMIT}"
+
+            QUERY='
+              mutation($input: CreateCommitOnBranchInput!) {
+                createCommitOnBranch(input: $input) {
+                  commit {
+                    oid
+                    url
+                  }
+                }
+              }
+            '
+
+            jq -n \
+              --arg query "$QUERY" \
+              --arg repo "$GITHUB_REPOSITORY" \
+              --arg ref "refs/heads/${TARGET_BRANCH}" \
+              --arg head "$MAIN_HEAD" \
+              --arg headline "$HEADLINE" \
+              --arg body "$BODY" \
+              --argjson additions "$ADDITIONS" \
+              --argjson deletions "$DELETIONS" \
+              '{
+                query: $query,
+                variables: {
+                  input: {
+                    branch: {
+                      repositoryNameWithOwner: $repo,
+                      refName: $ref
+                    },
+                    expectedHeadOid: $head,
+                    message: {
+                      headline: $headline,
+                      body: $body
+                    },
+                    fileChanges: {
+                      additions: $additions,
+                      deletions: $deletions
+                    }
+                  }
+                }
+              }' > request.json
+
+            RESPONSE="$(
+              curl \
+                --fail-with-body \
+                --silent \
+                --show-error \
+                -X POST \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Content-Type: application/json" \
+                https://api.github.com/graphql \
+                --data-binary @request.json
+            )"
+
+            if jq -e '.errors != null' >/dev/null <<< "$RESPONSE"; then
+              jq '.errors' <<< "$RESPONSE"
+              exit 1
+            fi
+
+            MAIN_HEAD="$(
+              jq -r \
+                '.data.createCommitOnBranch.commit.oid' \
+                <<< "$RESPONSE"
+            )"
+
+            COMMIT_URL="$(
+              jq -r \
+                '.data.createCommitOnBranch.commit.url' \
+                <<< "$RESPONSE"
+            )"
+
+            echo "Created: $COMMIT_URL"
+
+            # Ensure GitHub actually considers the generated commit verified.
+            VERIFY="$(
+              curl \
+                --fail-with-body \
+                --silent \
+                --show-error \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${MAIN_HEAD}"
+            )"
+
+            VERIFIED="$(
+              jq -r '.commit.verification.verified' <<< "$VERIFY"
+            )"
+
+            REASON="$(
+              jq -r '.commit.verification.reason' <<< "$VERIFY"
+            )"
+
+            if [[ "$VERIFIED" != "true" ]]; then
+              echo "Commit was created but is not Verified."
+              echo "Reason: $REASON"
+              exit 1
+            fi
+
+            echo "Verified: ${MAIN_HEAD}"
+          done
