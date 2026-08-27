@@ -24,19 +24,10 @@ jobs:
       - name: Apply commits as GitHub-signed commits
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.event.after }}
         shell: bash
         run: |
           set -euo pipefail
-
-          ZERO_SHA=0000000000000000000000000000000000000000
-
-          # Ignore the push event generated when chatgpt-staging is first created.
-          if [[ "$BEFORE" == "$ZERO_SHA" ]]; then
-            echo "Initial branch creation; nothing to apply."
-            exit 0
-          fi
 
           git init repo
           cd repo
@@ -48,22 +39,37 @@ jobs:
             "+refs/heads/${SOURCE_BRANCH}:refs/remotes/origin/${SOURCE_BRANCH}" \
             "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
 
-          if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            echo "The previous commit is no longer reachable."
-            echo "Force-pushes to ${SOURCE_BRANCH} are not supported."
-            exit 1
-          fi
-
-          if ! git merge-base --is-ancestor "$BEFORE" "$AFTER"; then
-            echo "${SOURCE_BRANCH} was force-pushed."
-            echo "Refusing to apply a non-linear history."
-            exit 1
-          fi
-
           MAIN_HEAD="$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")"
 
+          # Find the latest source commit that was already replayed onto main.
+          # If none exists yet, start at the common ancestor of both branches.
+          LAST_SOURCE="$(
+            git log "refs/remotes/origin/${TARGET_BRANCH}" --format=%B |
+            sed -nE 's/^Source-Commit: ([0-9a-f]{40})$/\1/p' |
+            head -n1
+          )"
+
+          if [[ -z "$LAST_SOURCE" ]]; then
+            LAST_SOURCE="$(
+              git merge-base \
+                "refs/remotes/origin/${SOURCE_BRANCH}" \
+                "refs/remotes/origin/${TARGET_BRANCH}"
+            )"
+          fi
+
+          if ! git cat-file -e "${LAST_SOURCE}^{commit}" 2>/dev/null; then
+            echo "The last applied source commit is no longer reachable: ${LAST_SOURCE}"
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$LAST_SOURCE" "$AFTER"; then
+            echo "${SOURCE_BRANCH} no longer contains the last applied source commit."
+            echo "Refusing to replay a non-linear history."
+            exit 1
+          fi
+
           mapfile -t COMMITS < <(
-            git rev-list --reverse "${BEFORE}..${AFTER}"
+            git rev-list --reverse "${LAST_SOURCE}..${AFTER}"
           )
 
           if [[ ${#COMMITS[@]} -eq 0 ]]; then
@@ -201,7 +207,7 @@ jobs:
             jq -n \
               --arg query "$QUERY" \
               --arg repo "$GITHUB_REPOSITORY" \
-              --arg ref "refs/heads/${TARGET_BRANCH}" \
+              --arg branch "$TARGET_BRANCH" \
               --arg head "$MAIN_HEAD" \
               --arg headline "$HEADLINE" \
               --arg body "$BODY" \
@@ -213,7 +219,7 @@ jobs:
                   input: {
                     branch: {
                       repositoryNameWithOwner: $repo,
-                      refName: $ref
+                      branchName: $branch
                     },
                     expectedHeadOid: $head,
                     message: {
