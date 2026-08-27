@@ -9,6 +9,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
 button, input, textarea, select { font: inherit; }
+svg { flex: 0 0 auto; }
 
 .page-shell {
   width: min(1040px, calc(100% - 32px));
@@ -38,6 +39,10 @@ h2 { margin: 0; font-size: 1.15rem; letter-spacing: -0.02em; }
 .lead { max-width: 700px; margin: 12px 0 0; color: #64748b; font-size: 1rem; }
 
 .primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   flex: 0 0 auto;
   border: 1px solid #0f172a;
   border-radius: 10px;
@@ -65,7 +70,8 @@ h2 { margin: 0; font-size: 1.15rem; letter-spacing: -0.02em; }
 }
 
 .mini-card { display: flex; flex-direction: column; gap: 4px; border-radius: 12px; padding: 16px; }
-.mini-label { color: #64748b; font-size: 0.8rem; font-weight: 650; }
+.mini-heading { display: flex; align-items: center; gap: 6px; color: #64748b; }
+.mini-label { color: inherit; font-size: 0.8rem; font-weight: 650; }
 .muted { color: #64748b; font-size: 0.82rem; }
 
 .card { overflow: hidden; border-radius: 12px; }
@@ -84,6 +90,7 @@ tbody tr:last-child td { border-bottom: 0; }
   align-items: center;
   min-width: 72px;
   justify-content: center;
+  gap: 5px;
   border: 1px solid transparent;
   border-radius: 999px;
   padding: 3px 9px;
@@ -96,15 +103,23 @@ tbody tr:last-child td { border-bottom: 0; }
 .badge-unsupported { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
 
 .notice { margin-top: 12px; border-radius: 12px; padding: 16px 18px; }
+.notice-title { display: flex; align-items: center; gap: 7px; }
 .notice strong { font-size: 0.9rem; }
 .notice p { margin: 5px 0 0; color: #64748b; font-size: 0.86rem; }
+
+.spin { animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}
 
 @media (prefers-color-scheme: dark) {
   :root { color: #e5e7eb; background: #09090b; }
   .mini-card, .card, .notice { background: #0f1115; border-color: #27272a; box-shadow: none; }
   .card-header, th, td { border-color: #27272a; }
   th { background: #111318; color: #a1a1aa; }
-  .eyebrow, .lead, .muted, .card-header p, .notice p { color: #a1a1aa; }
+  .eyebrow, .lead, .muted, .mini-heading, .card-header p, .notice p { color: #a1a1aa; }
   .primary-button { color: #09090b; background: #fafafa; border-color: #fafafa; }
   .primary-button:hover:not(:disabled) { background: #e4e4e7; }
   .badge-idle { color: #d4d4d8; background: #18181b; border-color: #3f3f46; }
