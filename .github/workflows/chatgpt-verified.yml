@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Apply commits as GitHub-signed commits
+      - name: Generate pnpm lockfile and apply commits as GitHub-signed commits
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AFTER: ${{ github.event.after }}
@@ -39,6 +39,32 @@ jobs:
             "+refs/heads/${SOURCE_BRANCH}:refs/remotes/origin/${SOURCE_BRANCH}" \
             "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
 
+          git checkout -B "$SOURCE_BRANCH" "refs/remotes/origin/${SOURCE_BRANCH}"
+
+          # Generate or refresh pnpm-lock.yaml before anything is replayed to main.
+          # --ignore-scripts avoids running arbitrary package lifecycle scripts here.
+          if [[ -f package.json ]]; then
+            corepack enable
+            corepack pnpm install --lockfile-only --ignore-scripts
+
+            if [[ ! -f pnpm-lock.yaml ]]; then
+              echo "pnpm did not generate pnpm-lock.yaml."
+              exit 1
+            fi
+
+            git add -- pnpm-lock.yaml
+
+            if ! git diff --cached --quiet -- pnpm-lock.yaml; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git commit -m "Generate pnpm lockfile"
+              git push origin "HEAD:refs/heads/${SOURCE_BRANCH}"
+            fi
+          fi
+
+          # The lockfile commit above may have advanced chatgpt-staging.
+          # Replay through the actual local HEAD rather than only github.event.after.
+          AFTER="$(git rev-parse HEAD)"
           MAIN_HEAD="$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")"
 
           # Find the latest source commit that was already replayed onto main.
