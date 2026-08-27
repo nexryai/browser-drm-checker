@@ -1,3 +1,14 @@
+import {
+  IconAlertTriangle,
+  IconCircleCheck,
+  IconCircleDashed,
+  IconCircleX,
+  IconKey,
+  IconLoader2,
+  IconLock,
+  IconPlayerPlay,
+  IconScan,
+} from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 
 type CheckState = "idle" | "checking" | "supported" | "unsupported";
@@ -53,7 +64,14 @@ function StatusBadge({ state }: { state: CheckState }) {
     unsupported: "非対応",
   }[state];
 
-  return <span className={`badge badge-${state}`}>{label}</span>;
+  const icon = {
+    idle: <IconCircleDashed size={14} stroke={2} aria-hidden="true" />,
+    checking: <IconLoader2 className="spin" size={14} stroke={2} aria-hidden="true" />,
+    supported: <IconCircleCheck size={14} stroke={2} aria-hidden="true" />,
+    unsupported: <IconCircleX size={14} stroke={2} aria-hidden="true" />,
+  }[state];
+
+  return <span className={`badge badge-${state}`}>{icon}{label}</span>;
 }
 
 export default function App() {
@@ -127,23 +145,36 @@ export default function App() {
         </div>
 
         <button className="primary-button" type="button" onClick={runChecker} disabled={running}>
-          {running ? "チェック中…" : "DRM をチェック"}
+          {running ? (
+            <><IconLoader2 className="spin" size={18} stroke={2} aria-hidden="true" />チェック中…</>
+          ) : (
+            <><IconPlayerPlay size={18} stroke={2} aria-hidden="true" />DRM をチェック</>
+          )}
         </button>
       </section>
 
       <section className="status-grid" aria-label="Environment status">
         <article className="mini-card">
-          <span className="mini-label">Secure Context</span>
+          <div className="mini-heading">
+            <IconLock size={16} stroke={2} aria-hidden="true" />
+            <span className="mini-label">Secure Context</span>
+          </div>
           <strong>{secureContext ? "Available" : "Unavailable"}</strong>
           <span className="muted">HTTPS または localhost が必要です</span>
         </article>
         <article className="mini-card">
-          <span className="mini-label">EME API</span>
+          <div className="mini-heading">
+            <IconKey size={16} stroke={2} aria-hidden="true" />
+            <span className="mini-label">EME API</span>
+          </div>
           <strong>{emeAvailable ? "Available" : "Unavailable"}</strong>
           <span className="muted">requestMediaKeySystemAccess</span>
         </article>
         <article className="mini-card">
-          <span className="mini-label">Detected</span>
+          <div className="mini-heading">
+            <IconScan size={16} stroke={2} aria-hidden="true" />
+            <span className="mini-label">Detected</span>
+          </div>
           <strong>{supportedCount} / {results.length}</strong>
           <span className="muted">対応 key system</span>
         </article>
@@ -183,7 +214,10 @@ export default function App() {
       </section>
 
       <section className="notice">
-        <strong>注意</strong>
+        <div className="notice-title">
+          <IconAlertTriangle size={18} stroke={2} aria-hidden="true" />
+          <strong>注意</strong>
+        </div>
         <p>
           この結果は EME の capability negotiation に基づく推定です。Widevine L1 や PlayReady SL3000 の実際の認証状態、
           HDCP、出力保護、デバイス証明書、配信サービス側の再生可否を直接保証するものではありません。
